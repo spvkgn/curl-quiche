@@ -1,0 +1,80 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout quiche
+        uses: actions/checkout@v4
+        with:
+          repository: 'cloudflare/quiche'
+          submodules: 'recursive'
+          path: quiche
+
+      - name: Install dependencies
+        run: sudo apt install -y libpsl-dev libidn2-dev libkrb5-dev libldap2-dev librtmp-dev libssh2-1-dev libzstd-dev zlib1g-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build quiche
+        working-directory: quiche
+        run: cargo build --package quiche --release --features ffi,pkg-config-meta,qlog
+
+      - name: Install quiche
+        working-directory: quiche
+        run: |
+          rm -f target/release/libquiche.so
+          mkdir quiche/deps/boringssl/src/lib
+          ln -vnf $(find target/release -name libcrypto.a -o -name libssl.a) quiche/deps/boringssl/src/lib/
+
+      - name: Download curl sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/curl/curl/releases/latest --jq '.tag_name')
+          version=$(echo "$tag" | sed 's/curl-//; s/_/./g')
+          mkdir -p curl
+          wget -qO- https://github.com/curl/curl/releases/download/$tag/curl-$version.tar.xz |\
+            tar -C curl -xJ --strip-components=1
+
+      - name: Build curl
+        working-directory: curl
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/build
+          autoreconf -fi
+          PKG_CONFIG="pkg-config --static" ./configure \
+            LDFLAGS="-Wl,-rpath,$GITHUB_WORKSPACE/quiche/target/release" \
+            --with-openssl=$GITHUB_WORKSPACE/quiche/quiche/deps/boringssl/src \
+            --with-quiche=$GITHUB_WORKSPACE/quiche/target/release \
+            --prefix=/usr \
+            --enable-static --disable-shared \
+            --disable-dependency-tracking \
+            --enable-ech --enable-doh \
+            --with-brotli --with-zstd \
+            --with-libidn2 \
+            --with-nghttp2 \
+            --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt \
+            --with-ca-path=/etc/ssl/certs \
+            --with-ca-fallback \
+            --without-libssh --with-libssh2 \
+            --disable-ldap --disable-ldaps
+          make V=1 -j$(nproc) install-strip DESTDIR=$GITHUB_WORKSPACE/build
+
+      - name: Prepare tar.xz
+        run: tar -C build -cJf curl-quiche.tar.xz .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: curl-quiche
+          path: |
+            curl-quiche.tar.xz
+          if-no-files-found: error
