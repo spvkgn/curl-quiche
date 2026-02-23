@@ -9,12 +9,17 @@ env:
 
 jobs:
   build:
+    name: build ${{ matrix.arch }}
     permissions:
       contents: write
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ ubuntu-22.04 ]
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: ubuntu-22.04-arm
+            arch: aarch64
     steps:
       - name: Checkout quiche
         uses: actions/checkout@v4
@@ -24,7 +29,9 @@ jobs:
           path: quiche
 
       - name: Install dependencies
-        run: sudo apt install -y libpsl-dev libidn2-dev libkrb5-dev libldap2-dev librtmp-dev libssh2-1-dev libzstd-dev zlib1g-dev
+        run: |
+          sudo apt update -qq
+          sudo apt install -y libpsl-dev libidn2-dev libkrb5-dev libldap2-dev librtmp-dev libssh2-1-dev libzstd-dev zlib1g-dev
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -83,7 +90,7 @@ jobs:
         run: |
           build/usr/bin/curl -V | sed '1s/^/> /' | tee curl.txt
           # tar -C build -cJf curl-quiche.tar.xz .
-          tar -C build/usr/bin -cJf curl-quiche_${{ env.CURL_VERSION }}.tar.xz .
+          tar -C build/usr/bin -cJf curl-quiche_${{ env.CURL_VERSION }}-${{ matrix.arch }}.tar.xz .
 
       # - name: Upload artifacts
       #   uses: actions/upload-artifact@v4
@@ -91,6 +98,12 @@ jobs:
       #     name: curl-${{ matrix.os }}
       #     path: curl-quiche.tar.xz
       #     if-no-files-found: error
+
+      - name: Delete existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --cleanup-tag -y -R ${{ github.repository }} || true
 
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2
@@ -101,4 +114,4 @@ jobs:
           tag_name: latest
           name: cURL ${{ env.CURL_VERSION }} w/quiche
           body_path: ./curl.txt
-          files: ./curl-quiche_${{ env.CURL_VERSION }}.tar.xz
+          files: ./curl-quiche_${{ env.CURL_VERSION }}-${{ matrix.arch }}.tar.xz
